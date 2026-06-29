@@ -15,6 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+# php.ini: keep $_ENV populated from the environment (variables_order with E) and NEVER print PHP
+# notices into the HTTP response (a `php artisan serve` broken-pipe notice would corrupt the SPA HTML).
+RUN printf 'display_errors=Off\nlog_errors=On\nvariables_order=EGPCS\n' > /usr/local/etc/php/conf.d/zzz-overcloud.ini
+
 WORKDIR /app
 COPY . /app
 
