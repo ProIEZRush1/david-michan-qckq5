@@ -4,26 +4,28 @@ namespace App\Services;
 
 use App\Models\BotContact;
 use App\Models\Cliente;
+use App\Models\Faq;
 use App\Models\Pedido;
 use App\Models\Plan;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
 /**
- * Deterministic, DB-driven Spanish WhatsApp SALES bot for the client's own phone line.
+ * Deterministic, DB-driven Spanish WhatsApp SALES bot for David Michan (venta de líneas
+ * telefónicas).
  *
- * It is a finite-state machine keyed on BotContact->step:
- *   new → choosing → confirming → done   (+ the cross-cutting "human" handoff state)
+ * Finite-state machine keyed on BotContact->step:
+ *   new → choosing → capturing_name → confirming → done   (+ cross-cutting "human" handoff)
  *
- * Unlike the panel's BotResponder (the STYLE reference for tone, `isYes`, `wantsHuman`
- * and single-asterisk WhatsApp bold) this engine calls NO AI/LLM — every reply is fixed
- * copy, kept in clearly-labeled private methods so it is trivially editable per client.
+ * Every reply is fixed copy kept in clearly-labeled private methods so it stays trivially
+ * editable. No AI/LLM call anywhere — the bot only talks to the local database.
  */
 class BotEngine
 {
     // ---- finite-state-machine steps -------------------------------------
     private const STEP_NEW = 'new';
     private const STEP_CHOOSING = 'choosing';
+    private const STEP_CAPTURING_NAME = 'capturing_name';
     private const STEP_CONFIRMING = 'confirming';
     private const STEP_DONE = 'done';
     private const STEP_HUMAN = 'human';
@@ -40,7 +42,8 @@ class BotEngine
             $contact->save();
         }
 
-        $normalized = Str::lower(trim($text));
+        $rawText = trim($text);
+        $normalized = Str::lower($rawText);
 
         // ESCALATION (any step): the client wants a real person → hand off and go silent.
         if ($this->wantsHuman($normalized)) {
@@ -60,12 +63,24 @@ class BotEngine
         // The literal word "menu"/"menú" resets the funnel from anywhere.
         if (in_array($normalized, ['menu', 'menú'], true)) {
             $this->setStep($contact, self::STEP_NEW);
+            $this->onNew($contact, $from);
+
+            return;
+        }
+
+        // A question matching our knowledge base is answered without disturbing the funnel.
+        $faq = $this->matchFaq($normalized);
+        if ($faq) {
+            $this->reply($from, $faq->respuesta);
+
+            return;
         }
 
         match ($contact->step) {
-            self::STEP_CHOOSING => $this->onChoosing($contact, $from, $fromName, $normalized),
-            self::STEP_CONFIRMING => $this->onConfirming($contact, $from, $fromName, $normalized),
-            self::STEP_DONE => $this->onDone($contact, $from),
+            self::STEP_CHOOSING => $this->onChoosing($contact, $from, $normalized),
+            self::STEP_CAPTURING_NAME => $this->onCapturingName($contact, $from, $rawText),
+            self::STEP_CONFIRMING => $this->onConfirming($contact, $from, $normalized),
+            self::STEP_DONE => $this->onDone($from),
             default => $this->onNew($contact, $from), // STEP_NEW / first contact / unknown
         };
     }
@@ -86,8 +101,8 @@ class BotEngine
         $this->reply($from, $this->copyGreeting($contact->name).$this->planList($plans).$this->copyAskChoice());
     }
 
-    /** Match the reply to a plan (by list number or fuzzy name); create the Pedido and ask to confirm. */
-    private function onChoosing(BotContact $contact, string $from, ?string $fromName, string $text): void
+    /** Match the reply to a plan (by list number or fuzzy name), then ask for the buyer's name or confirm. */
+    private function onChoosing(BotContact $contact, string $from, string $text): void
     {
         $plans = $this->activePlans();
         if ($plans->isEmpty()) {
@@ -103,39 +118,65 @@ class BotEngine
             return;
         }
 
-        Pedido::create([
-            'bot_contact_id' => $contact->id,
-            'plan_id' => $plan->id,
-            'cliente' => $fromName ?: $contact->name,
-            'telefono' => $from,
-            'estado' => 'nuevo',
-        ]);
-
         $data = $contact->data ?? [];
         $data['plan_id'] = $plan->id;
         $contact->data = $data;
-        $contact->step = self::STEP_CONFIRMING;
-        $contact->save();
 
+        if (blank($contact->name)) {
+            $this->setStep($contact, self::STEP_CAPTURING_NAME);
+            $this->reply($from, $this->copyAskName($plan));
+
+            return;
+        }
+
+        $this->createPedidoIniciado($contact, $from, $plan, $contact->name);
+        $this->setStep($contact, self::STEP_CONFIRMING);
         $this->reply($from, $this->copyConfirmPrompt($plan));
     }
 
-    /** Affirmative → confirm the Pedido and capture the buyer; negative → back to choosing. */
-    private function onConfirming(BotContact $contact, string $from, ?string $fromName, string $text): void
+    /** Capture the buyer's full name (required to close the sale), then move to confirmation. */
+    private function onCapturingName(BotContact $contact, string $from, string $rawText): void
+    {
+        $looksLikeName = mb_strlen($rawText) >= 2 && ! ctype_digit(str_replace(' ', '', $rawText));
+        if (! $looksLikeName) {
+            $this->reply($from, $this->copyAskNameRetry());
+
+            return;
+        }
+
+        $contact->name = $rawText;
+        $contact->save();
+
+        $planId = $contact->data['plan_id'] ?? null;
+        $plan = $planId ? Plan::where('activo', true)->find($planId) : null;
+
+        if (! $plan) {
+            // Plan was deactivated while we waited for the name — restart the funnel cleanly.
+            $this->setStep($contact, self::STEP_NEW);
+            $this->onNew($contact, $from);
+
+            return;
+        }
+
+        $this->createPedidoIniciado($contact, $from, $plan, $rawText);
+        $this->setStep($contact, self::STEP_CONFIRMING);
+        $this->reply($from, $this->copyConfirmPrompt($plan));
+    }
+
+    /** Affirmative → send the order to payment; negative → back to choosing. */
+    private function onConfirming(BotContact $contact, string $from, string $text): void
     {
         if ($this->isYes($text)) {
             $pedido = $this->pendingPedido($contact);
-            if ($pedido) {
-                $pedido->update(['estado' => 'confirmado']);
-            }
+            $pedido?->update(['estado' => 'en_pago']);
 
             Cliente::updateOrCreate(
                 ['telefono' => $from],
-                ['nombre' => $fromName ?: $contact->name],
+                ['nombre' => $contact->name],
             );
 
             $this->setStep($contact, self::STEP_DONE);
-            $this->reply($from, $this->copyConfirmed());
+            $this->reply($from, $this->copyConfirmed($pedido?->plan));
 
             return;
         }
@@ -153,9 +194,29 @@ class BotEngine
     }
 
     /** Order already registered → polite close; "menu" (handled upstream) restarts the flow. */
-    private function onDone(BotContact $contact, string $from): void
+    private function onDone(string $from): void
     {
         $this->reply($from, $this->copyAlreadyDone());
+    }
+
+    // ---- persistence helpers ---------------------------------------------
+
+    private function createPedidoIniciado(BotContact $contact, string $from, Plan $plan, ?string $nombre): void
+    {
+        $cliente = Cliente::updateOrCreate(
+            ['telefono' => $from],
+            ['nombre' => $nombre],
+        );
+
+        Pedido::create([
+            'bot_contact_id' => $contact->id,
+            'cliente_id' => $cliente->id,
+            'plan_id' => $plan->id,
+            'cliente' => $nombre,
+            'telefono' => $from,
+            'estado' => 'iniciado',
+            'monto' => $plan->precio,
+        ]);
     }
 
     // ---- plan helpers ---------------------------------------------------
@@ -193,11 +254,35 @@ class BotEngine
         $planId = $contact->data['plan_id'] ?? null;
 
         return $contact->pedidos()
-            ->where('estado', 'nuevo')
+            ->where('estado', 'iniciado')
             ->when($planId, fn ($q) => $q->where('plan_id', $planId))
             ->latest('id')
             ->first()
-            ?? $contact->pedidos()->where('estado', 'nuevo')->latest('id')->first();
+            ?? $contact->pedidos()->where('estado', 'iniciado')->latest('id')->first();
+    }
+
+    // ---- FAQ knowledge base ----------------------------------------------
+
+    /** Keyword-matches inbound text against the active FAQ knowledge base. */
+    private function matchFaq(string $normalized): ?Faq
+    {
+        if ($normalized === '') {
+            return null;
+        }
+
+        return Faq::where('activo', true)
+            ->orderBy('orden')
+            ->get()
+            ->first(function (Faq $faq) use ($normalized) {
+                foreach (explode(',', $faq->palabras_clave) as $keyword) {
+                    $keyword = Str::lower(trim($keyword));
+                    if ($keyword !== '' && Str::contains($normalized, $keyword)) {
+                        return true;
+                    }
+                }
+
+                return false;
+            });
     }
 
     // ---- copy (editable Spanish strings) --------------------------------
@@ -206,14 +291,21 @@ class BotEngine
     {
         $greeting = $name ? "¡Hola, {$name}! 👋" : '¡Hola! 👋';
 
-        return $greeting." Gracias por escribir a *".config('app.name')."* 🙌\n\n"
-            ."Estos son nuestros planes:\n\n";
+        return $greeting." Gracias por escribir a *".config('app.name')."* 📱\n\n"
+            ."Vendemos líneas telefónicas con planes de datos, minutos y SMS. Estos son nuestros planes disponibles:\n\n";
     }
 
     private function planList(Collection $plans): string
     {
         $lines = $plans->values()->map(function (Plan $plan, int $i) {
-            $line = ($i + 1).'. *'.$plan->nombre.'* — '.$this->formatPrice($plan->precio);
+            $datos = $plan->datos_gb ? $plan->datos_gb.' GB de datos' : 'Datos ilimitados';
+            $minutos = $plan->minutos_ilimitados ? 'Minutos ilimitados' : 'Minutos incluidos';
+            $sms = $plan->sms_ilimitados ? 'SMS ilimitados' : 'SMS incluidos';
+
+            $line = ($i + 1).'. *'.$plan->nombre.'* — '.$this->formatPrice($plan->precio)."\n"
+                ."   📶 {$datos} · ⏱️ {$minutos} · ✉️ {$sms}\n"
+                ."   Vigencia: {$plan->vigencia_dias} días";
+
             if (filled($plan->descripcion)) {
                 $line .= "\n   ".$plan->descripcion;
             }
@@ -234,6 +326,16 @@ class BotEngine
         return "No identifiqué ese plan. 🤔 Estos son los disponibles:\n\n";
     }
 
+    private function copyAskName(Plan $plan): string
+    {
+        return '¡Perfecto! 🙌 Para continuar con tu línea *'.$plan->nombre."*, ¿cuál es tu nombre completo? 📝";
+    }
+
+    private function copyAskNameRetry(): string
+    {
+        return 'Necesito tu nombre completo para registrar tu línea. ¿Cómo te llamas? 🙂';
+    }
+
     private function copyConfirmPrompt(Plan $plan): string
     {
         return '¡Excelente elección! 🙌 Elegiste *'.$plan->nombre.'* ('.$this->formatPrice($plan->precio).").\n\n"
@@ -250,21 +352,26 @@ class BotEngine
         return "Sin problema. 🙌 Aquí están los planes de nuevo:\n\n";
     }
 
-    private function copyConfirmed(): string
+    private function copyConfirmed(?Plan $plan): string
     {
-        return "¡Listo! ✅ Registramos tu pedido. Un asesor te contactará en breve para los siguientes pasos. 🙌\n\n"
-            ."Si quieres empezar de nuevo, escribe *menu*.";
+        $planNombre = $plan?->nombre ?? 'tu línea';
+
+        return "¡Listo! ✅ Registramos tu pedido de *{$planNombre}*.\n\n"
+            .'En breve te compartiremos el link de pago para completarlo. En cuanto se confirme tu pago, '
+            ."te asignaremos automáticamente tu nuevo número y te avisaremos por este mismo chat. 🙌\n\n"
+            .'Si quieres empezar de nuevo, escribe *menu*.';
     }
 
     private function copyAlreadyDone(): string
     {
-        return "Ya registramos tu pedido ✅ y un asesor te contactará pronto. 🙌\n\n"
-            ."Si quieres empezar de nuevo, escribe *menu*.";
+        return "Ya registramos tu pedido ✅. En cuanto se confirme tu pago te asignaremos tu número y te avisaremos por aquí. 🙌\n\n"
+            .'Si quieres empezar de nuevo, escribe *menu*.';
     }
 
     private function copyNoPlans(): string
     {
-        return 'Gracias por escribir 🙌 En un momento un asesor te atiende personalmente.';
+        return 'Gracias por escribir a *'.config('app.name')."* 🙌 En este momento estamos actualizando nuestros planes; "
+            .'un asesor te contactará en breve para ayudarte a elegir tu línea.';
     }
 
     private function copyHandoff(): string

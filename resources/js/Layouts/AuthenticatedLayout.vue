@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import Dropdown from '@/Components/Dropdown.vue';
 import DropdownLink from '@/Components/DropdownLink.vue';
+import FlashToast from '@/Components/FlashToast.vue';
 import ResponsiveNavLink from '@/Components/ResponsiveNavLink.vue';
 import { Link, usePage } from '@inertiajs/vue3';
 
@@ -20,6 +21,39 @@ const brandInitials = computed(() => {
     }
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 });
+
+const moduleNav = [
+    {
+        pattern: 'planes.*',
+        href: () => route('planes.index'),
+        label: 'Planes',
+        icon: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14',
+    },
+    {
+        pattern: 'inventario.*',
+        href: () => route('inventario.index'),
+        label: 'Inventario de números',
+        icon: 'M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z',
+    },
+    {
+        pattern: 'pedidos.*',
+        href: () => route('pedidos.index'),
+        label: 'Pedidos',
+        icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
+    },
+    {
+        pattern: 'clientes.*',
+        href: () => route('clientes.index'),
+        label: 'Clientes',
+        icon: 'M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-2.13a4 4 0 10-4-4 4 4 0 004 4zm6 0a4 4 0 10-4-4',
+    },
+    {
+        pattern: 'preguntas-frecuentes.*',
+        href: () => route('preguntas-frecuentes.index'),
+        label: 'Preguntas frecuentes',
+        icon: 'M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
+    },
+];
 
 const userName = computed(() => page.props.auth?.user?.name ?? '');
 const userEmail = computed(() => page.props.auth?.user?.email ?? '');
@@ -110,7 +144,28 @@ const userInitials = computed(() => {
                     </svg>
                     Conectar WhatsApp
                 </Link>
-                <!-- El menú se amplía por cliente según los módulos instalados. -->
+                <Link
+                    v-for="item in moduleNav"
+                    :key="item.pattern"
+                    :href="item.href()"
+                    :class="[
+                        'flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold transition',
+                        route().current(item.pattern)
+                            ? 'bg-gradient-to-r from-[#7c3aed] to-[#c026d3] text-white shadow-md shadow-fuchsia-500/20'
+                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
+                    ]"
+                >
+                    <svg
+                        class="h-5 w-5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                    >
+                        <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
+                    </svg>
+                    {{ item.label }}
+                </Link>
             </nav>
 
             <!-- Footer credit -->
@@ -232,6 +287,14 @@ const userInitials = computed(() => {
                         :active="route().current('conectar')"
                     >
                         Conectar WhatsApp
+                    </ResponsiveNavLink>
+                    <ResponsiveNavLink
+                        v-for="item in moduleNav"
+                        :key="item.pattern"
+                        :href="item.href()"
+                        :active="route().current(item.pattern)"
+                    >
+                        {{ item.label }}
                     </ResponsiveNavLink>
                 </div>
                 <div class="border-t border-slate-200 px-4 py-4">

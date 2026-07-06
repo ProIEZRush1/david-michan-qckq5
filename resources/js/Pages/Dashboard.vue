@@ -1,7 +1,12 @@
 <script setup>
 import { computed } from 'vue';
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
-import { Head, usePage } from '@inertiajs/vue3';
+import { Head, Link, usePage } from '@inertiajs/vue3';
+
+const props = defineProps({
+    stats: Object,
+    modulos: Object,
+});
 
 const page = usePage();
 
@@ -11,36 +16,49 @@ const userFirstName = computed(() => {
     return name ? name.split(/\s+/)[0] : '';
 });
 
-const stats = [
+function formatMoney(cents) {
+    return '$' + Math.round((cents || 0) / 100).toLocaleString('es-MX') + ' MXN';
+}
+
+const stats = computed(() => [
     {
         label: 'Clientes activos',
-        value: '—',
+        value: String(props.stats.clientes),
         hint: 'Tus contactos registrados',
         gradient: 'from-[#7c3aed] to-[#a855f7]',
         icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z',
     },
     {
         label: 'Pedidos del mes',
-        value: '—',
+        value: String(props.stats.pedidosMes),
         hint: 'Actividad reciente',
         gradient: 'from-[#a21caf] to-[#c026d3]',
         icon: 'M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293A1 1 0 005.414 17H17M17 17a2 2 0 100 4 2 2 0 000-4zM9 19a2 2 0 11-4 0 2 2 0 014 0z',
     },
     {
         label: 'Ingresos',
-        value: '—',
-        hint: 'Total acumulado',
+        value: formatMoney(props.stats.ingresos),
+        hint: 'Pedidos pagados en adelante',
         gradient: 'from-[#7c3aed] to-[#c026d3]',
         icon: 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
     },
     {
-        label: 'Tareas pendientes',
-        value: '—',
-        hint: 'Por completar',
+        label: 'Pedidos pendientes',
+        value: String(props.stats.pendientes),
+        hint: 'Por cobrar / asignar número',
         gradient: 'from-[#c026d3] to-[#db2777]',
         icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
     },
-];
+]);
+
+const modulos = computed(() => [
+    { label: 'Planes', emoji: '📶', value: props.modulos.planes, href: route('planes.index') },
+    { label: 'Inventario de números', emoji: '📱', value: props.modulos.numerosDisponibles, hint: 'disponibles', href: route('inventario.index') },
+    { label: 'Pedidos', emoji: '🧾', value: props.modulos.pedidos, href: route('pedidos.index') },
+    { label: 'Clientes', emoji: '👥', value: props.modulos.clientes, href: route('clientes.index') },
+    { label: 'Preguntas frecuentes', emoji: '💬', value: props.modulos.faqs, href: route('preguntas-frecuentes.index') },
+    { label: 'Conectar WhatsApp', emoji: '🔗', value: null, href: route('conectar') },
+]);
 </script>
 
 <template>
@@ -72,10 +90,10 @@ const stats = [
                         Hola<span v-if="userFirstName">, {{ userFirstName }}</span> 👋
                     </h1>
                     <p class="mt-3 max-w-2xl text-base text-white/85">
-                        Este es el panel de
+                        Este es el panel de venta de líneas telefónicas de
                         <span class="font-semibold">{{ businessName }}</span>.
-                        Desde aquí podrás gestionar tu negocio, dar seguimiento a tu
-                        actividad y mantener todo organizado en un solo lugar.
+                        Desde aquí gestionas tus planes, tu inventario de números,
+                        tus pedidos y a tus clientes — todo conectado con tu bot de WhatsApp.
                     </p>
                 </div>
             </section>
@@ -121,35 +139,66 @@ const stats = [
                 </div>
             </section>
 
-            <!-- Welcome / next steps -->
+            <!-- Módulos -->
+            <section>
+                <h3 class="mb-4 text-lg font-bold text-slate-800">Tus módulos</h3>
+                <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                    <Link
+                        v-for="modulo in modulos"
+                        :key="modulo.label"
+                        :href="modulo.href"
+                        class="group flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
+                    >
+                        <div class="flex items-center gap-4">
+                            <span class="flex h-12 w-12 items-center justify-center rounded-xl bg-slate-50 text-2xl">
+                                {{ modulo.emoji }}
+                            </span>
+                            <div>
+                                <p class="text-sm font-semibold text-slate-700">{{ modulo.label }}</p>
+                                <p v-if="modulo.value !== null" class="text-xs text-slate-400">
+                                    {{ modulo.value }} {{ modulo.hint ?? 'registrados' }}
+                                </p>
+                            </div>
+                        </div>
+                        <span
+                            class="rounded-full bg-gradient-to-r from-[#7c3aed] to-[#c026d3] px-3 py-1 text-xs font-semibold text-white opacity-0 shadow-sm transition group-hover:opacity-100"
+                        >
+                            Ver / Administrar
+                        </span>
+                    </Link>
+                </div>
+            </section>
+
+            <!-- Ayuda -->
             <section class="grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <div
                     class="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm lg:col-span-2"
                 >
                     <h3 class="text-lg font-bold text-slate-800">
-                        Tu sistema está listo
+                        Tu bot de WhatsApp está listo
                     </h3>
                     <p class="mt-2 text-sm leading-relaxed text-slate-600">
-                        Hemos preparado el panel de
-                        <span class="font-semibold text-slate-800">{{ businessName }}</span>
-                        para que empieces a trabajar. A medida que se activen nuevos
-                        módulos, aparecerán aquí y en el menú lateral.
+                        Cuando un cliente escribe a tu número de
+                        <span class="font-semibold text-slate-800">{{ businessName }}</span>,
+                        el bot le muestra tus planes, responde sus preguntas frecuentes,
+                        captura sus datos y registra su pedido automáticamente. Tú das
+                        seguimiento a la venta desde el módulo de Pedidos.
                     </p>
                     <div class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <div class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm font-semibold text-slate-700">
-                                Personaliza tu perfil
+                                Conecta tu WhatsApp
                             </p>
                             <p class="mt-1 text-xs text-slate-500">
-                                Actualiza tus datos desde el menú de tu cuenta.
+                                Escanea el código QR desde "Conectar WhatsApp".
                             </p>
                         </div>
                         <div class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm font-semibold text-slate-700">
-                                Explora tu panel
+                                Da seguimiento a tus pedidos
                             </p>
                             <p class="mt-1 text-xs text-slate-500">
-                                Tus métricas y herramientas vivirán en esta pantalla.
+                                Confirma pagos y el sistema asigna el número automáticamente.
                             </p>
                         </div>
                     </div>
